@@ -26,10 +26,10 @@ def calcular_prob_implicita(odds):
 
 
 # ==============================================================================
-# 🎯 FUNÇÃO DO MODELO xG DINÂMICO PRINCIPAL CORRIGIDA
+# 🎯 FUNÇÃO DO MODELO xG DINÂMICO PRINCIPAL (ESTÁVEL)
 # ==============================================================================
 
-def modelo_xg_dinamico_avancado(
+def modelo_xg_dinamico_avancado_sem_momentum(
     xg_home, xg_away,
     minutos_jogados,
     placar_home, placar_away,
@@ -50,21 +50,19 @@ def modelo_xg_dinamico_avancado(
 
     # --- 1. CÁLCULO DOS FATORES DE FORÇA PRÉ-JOGO (3 TIPOS) ---
     
-    # Prevenção de divisão por zero: garantimos que a baseline da liga não é zero
     liga_baseline = max(media_liga_gols_por_jogo, EPSILON) 
     FATOR_NEUTRO_CONVERSAO = 0.10 # Fator neutro de conversão da liga (10%)
     
-    # Fator de conversão é a força relativa: (Conversão Time / Conversão Média Liga)
     fator_conversao_relativo_casa = eficacia_conversao_casa / max(FATOR_NEUTRO_CONVERSAO, EPSILON)
     fator_conversao_relativo_fora = eficacia_conversao_fora / max(FATOR_NEUTRO_CONVERSAO, EPSILON)
 
     # 1.1. Fatores Estatísticos (BASELINE - Padrão)
     fator_ofensivo_casa_base = gols_marcados_casa / liga_baseline
-    fator_defensivo_fora_base = liga_baseline / max(gols_sofridos_fora, EPSILON) # Proteção
+    fator_defensivo_fora_base = liga_baseline / max(gols_sofridos_fora, EPSILON)
     fator_baseline_casa = fator_ofensivo_casa_base * fator_defensivo_fora_base * fator_conversao_relativo_casa
     
     fator_ofensivo_fora_base = gols_marcados_fora / liga_baseline
-    fator_defensivo_casa_base = liga_baseline / max(gols_sofridos_casa, EPSILON) # Proteção
+    fator_defensivo_casa_base = liga_baseline / max(gols_sofridos_casa, EPSILON)
     fator_baseline_fora = fator_ofensivo_fora_base * fator_defensivo_casa_base * fator_conversao_relativo_fora
 
 
@@ -89,22 +87,17 @@ def modelo_xg_dinamico_avancado(
     fator_mercado_fora = math.sqrt(fator_mercado_total)
 
     
-    # --- 2. CÁLCULO MOMENTUM E AJUSTE DE PLACAR ---
+    # --- 2. CÁLCULO DE RITMO E AJUSTES ---
     
     # Ritmo Médio (xG/min)
     ritmo_home_medio = xg_home / minutos_jogados
     ritmo_away_medio = xg_away / minutos_jogados
     
-    periodo_momentum = 10
-    periodo_analise = min(minutos_jogados, periodo_momentum)
-        
-    ritmo_home_recente = xg_home / max(periodo_analise, EPSILON)
-    ritmo_away_recente = xg_away / max(periodo_analise, EPSILON)
-
-    # Momentum: USANDO EPSILON NO DENOMINADOR DO RITMO MÉDIO
-    momentum_home = ritmo_home_recente / max(ritmo_home_medio, EPSILON)
-    momentum_away = ritmo_away_recente / max(ritmo_away_medio, EPSILON)
-
+    # FATORES FIXOS (MOMENTUM E MANDO DE CAMPO NEUTROS)
+    momentum_home = 1.0
+    momentum_away = 1.0
+    fator_mando = 1.0 # CORREÇÃO: FATOR MANDO DE CAMPO NEUTRO
+    
     # Ajuste por Placar
     ajuste_home = 1.0; ajuste_away = 1.0
     if placar_home > placar_away:
@@ -112,7 +105,6 @@ def modelo_xg_dinamico_avancado(
     elif placar_home < placar_away:
         ajuste_home = 1.4; ajuste_away = 0.7
 
-    fator_mando = 1.1 
     minutos_restantes = duracao - minutos_jogados
     
     if minutos_restantes <= 0:
@@ -153,11 +145,11 @@ def modelo_xg_dinamico_avancado(
     resultados["Modelo Direto (Comparação)"] = run_projection(fator_direto_casa, fator_direto_fora, "Estatístico (Direto)")
     resultados["Modelo Mercado"] = run_projection(fator_mercado_casa, fator_mercado_fora, "Expectativa Mercado")
     
-    # Fatores Dinâmicos
+    # Fatores Dinâmicos (Momentum e Mando são 1.0)
     resultados["Fatores Dinâmicos"] = {
-        "Momentum Home": round(momentum_home, 2), 
-        "Momentum Away": round(momentum_away, 2),
-        "Fator Mando Fixo": fator_mando,
+        "Momentum Home": 1.0, 
+        "Momentum Away": 1.0,
+        "Fator Mando Fixo": 1.0,
     }
 
     return resultados, None
@@ -167,12 +159,12 @@ def modelo_xg_dinamico_avancado(
 # ==============================================================================
 
 st.set_page_config(
-    page_title="Modelo Dinâmico xG Avançado", 
+    page_title="Modelo Dinâmico xG (Estável)", 
     layout="wide"
 )
 
-st.title("⚽ Modelo Dinâmico xG Avançado (3 Cenários)")
-st.markdown("Analisa a projeção de gols restantes usando *momentum* e três fontes de força pré-jogo: **Estatística (Baseline)**, **Estatística (Direta)** e **Mercado**.")
+st.title("⚽ Modelo Dinâmico xG (Estável)")
+st.markdown("Projeta gols restantes focando apenas na **Força Pré-Jogo**, no **Placar** e no **Ritmo Médio**.")
 
 st.divider()
 
@@ -189,7 +181,7 @@ with col1:
     st.markdown("---")
     xg_home = st.number_input("xG Time da Casa (Total)", min_value=0.0, value=1.31, step=0.01, format="%.2f")
     xg_away = st.number_input("xG Time Visitante (Total)", min_value=0.0, value=0.57, step=0.01, format="%.2f")
-
+    # Momentum foi removido da interface
 
 with col2:
     st.header("⭐ Força Estatística (Pré-Jogo)")
@@ -269,7 +261,7 @@ with col3:
 if st.button("Calcular Projeção e EV (3 Cenários)", type="primary"):
     
     # Executa o modelo
-    resultados, erro = modelo_xg_dinamico_avancado(
+    resultados, erro = modelo_xg_dinamico_avancado_sem_momentum(
         xg_home=xg_home, xg_away=xg_away,
         minutos_jogados=minutos_jogados,
         placar_home=placar_home, placar_away=placar_away,
@@ -279,8 +271,9 @@ if st.button("Calcular Projeção e EV (3 Cenários)", type="primary"):
         media_liga_gols_por_jogo=media_liga_gols_por_jogo,
         # INPUTS PASSADOS
         odds_over_pre=odds_over_pre, odds_under_pre=odds_under_pre,
-        odds_1=odds_1, odds_x=odds_x, odds_2=odds_2,
-        odds_over_1_5_pre=odds_over_1_5_pre, odds_under_1_5_pre=odds_under_1_5_pre
+        odds_1=odds_1, odds_x=odds_x, odds_2=odds_2, # Passados para a função, mas não usados na projeção
+        odds_over_1_5_pre=odds_over_1_5_pre, odds_under_1_5_pre=odds_under_1_5_pre, # Passados para a função, mas não usados na projeção
+        duracao=duracao
     )
 
     if erro:
@@ -293,7 +286,7 @@ if st.button("Calcular Projeção e EV (3 Cenários)", type="primary"):
         col_fat, col_base, col_dir, col_mkt = st.columns(4)
         fatores = resultados["Fatores Dinâmicos"]
 
-        # 1. Fatores Dinâmicos
+        # 1. Fatores Fixo
         with col_fat:
             st.subheader("Fatores de Ajuste")
             st.metric(label="Fator Momentum Casa", value=f"{fatores['Momentum Home']:.2f}")
@@ -309,7 +302,10 @@ if st.button("Calcular Projeção e EV (3 Cenários)", type="primary"):
                 
                 st.metric(label="xG Esperado (λ)", value=f"{res['lambda']:.3f}")
                 st.metric(label="P(0 Gols)", value=f"{res['P(0 gols)']:.1%}")
-                st.metric(label="Odds Justa Under", value=f"{res['Odd Justa Under']:.2f}")
+                
+                odds_justa = res['Odd Justa Under']
+                odds_justa_display = f"{odds_justa:.2f}" if odds_justa < 999 else ">999"
+                st.metric(label="Odds Justa Under", value=odds_justa_display)
                 
                 ev_under_valor = res['EV Under (%)']
                 st.metric(
@@ -330,5 +326,5 @@ if st.button("Calcular Projeção e EV (3 Cenários)", type="primary"):
         
         st.divider()
         st.markdown(
-            "***Observação:*** O modelo agora é muito mais estável, graças às proteções contra divisão por zero."
+            "***Estabilidade Final:*** O modelo agora projeta o xG restante de forma estável, utilizando apenas a **Força Pré-Jogo (calibrada)**, o **Placar** e o **Ritmo Médio** do jogo, sem ajustes dinâmicos."
         )
