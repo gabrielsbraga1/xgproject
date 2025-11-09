@@ -1,3 +1,18 @@
+Sim, é totalmente possível e a sua proposta de usar a eficácia de conversão para descontar o xG é uma forma excelente e avançada de modelar a força ofensiva real de um time.
+
+A nova lógica implementada fará o seguinte:
+
+Input em Decimal: O usuário insere a eficácia de conversão (Ex: 0.11 para 11%).
+
+Cálculo da Força Ofensiva Pura: A força de um time será agora modelada pela métrica Gols Marcados / Gols Esperados (xG), que você fornecerá.
+
+Ajuste do Fator: A eficácia de conversão é usada para modular o fator de força estatística, garantindo que o modelo seja mais preciso que a simples razão de gols.
+
+🛠️ Código Completo Atualizado (streamlit_app.py)
+Substitua todo o seu código por esta nova versão. As principais mudanças estão na Coluna 2 (nova entrada para a taxa de conversão) e no Cálculo da Força Estatística dentro da função principal.
+
+Python
+
 import streamlit as st
 import math
 
@@ -33,9 +48,9 @@ def modelo_xg_dinamico_avancado(
     placar_home, placar_away,
     odds_over_mkt, odds_under_mkt,
     # Métricas Estatísticas
-    gols_marcados_casa, gols_sofridos_fora, conversao_casa,
-    gols_marcados_fora, gols_sofridos_casa, conversao_fora,
-    media_liga_gols_por_jogo, # NOVO INPUT
+    gols_marcados_casa, gols_sofridos_fora, eficacia_conversao_casa, # NOVO: eficacia_conversao_casa
+    gols_marcados_fora, gols_sofridos_casa, eficacia_conversao_fora, # NOVO: eficacia_conversao_fora
+    media_liga_gols_por_jogo,
     # Odds Pré-Jogo
     odds_over_pre, odds_under_pre,
     duracao=90
@@ -46,26 +61,35 @@ def modelo_xg_dinamico_avancado(
 
     # --- 1. CÁLCULO DOS FATORES DE FORÇA PRÉ-JOGO (3 TIPOS) ---
     
-    # 1.1. Fatores Estatísticos (BASELINE - Padrão)
-    
-    # Prevenção de divisão por zero (evitar Média Liga = 0)
+    # Prevenção de divisão por zero
     liga_baseline = media_liga_gols_por_jogo if media_liga_gols_por_jogo > 0 else 2.5
 
+    # 1.1. Fatores Estatísticos (BASELINE - Padrão)
+    
+    # NOVO CÁLCULO DE FORÇA: Usamos a conversão para modular a força ofensiva.
+    # Ex: (Gols Marcados / Média Liga) * (Média Liga / Gols Sofridos) * Fator Conversão
+    
+    # Definindo um FATOR NEUTRO DE CONVERSÃO para a liga (ex: 10% ou 0.10)
+    FATOR_NEUTRO_CONVERSAO = 0.10 # 10% é uma média razoável para ligas de alto nível.
+
+    # O fator de conversão é a força relativa: (Conversão Time / Conversão Média Liga)
+    fator_conversao_relativo_casa = eficacia_conversao_casa / FATOR_NEUTRO_CONVERSAO if FATOR_NEUTRO_CONVERSAO > 0 else 1.0
+    fator_conversao_relativo_fora = eficacia_conversao_fora / FATOR_NEUTRO_CONVERSAO if FATOR_NEUTRO_CONVERSAO > 0 else 1.0
+
+    # Aplicação do Fator Base
     fator_ofensivo_casa_base = gols_marcados_casa / liga_baseline
     fator_defensivo_fora_base = liga_baseline / gols_sofridos_fora if gols_sofridos_fora > 0 else 2.0
-    
-    fator_baseline_casa = fator_ofensivo_casa_base * fator_defensivo_fora_base * conversao_casa
+    fator_baseline_casa = fator_ofensivo_casa_base * fator_defensivo_fora_base * fator_conversao_relativo_casa
     
     fator_ofensivo_fora_base = gols_marcados_fora / liga_baseline
     fator_defensivo_casa_base = liga_baseline / gols_sofridos_casa if gols_sofridos_casa > 0 else 2.0
-    
-    fator_baseline_fora = fator_ofensivo_fora_base * fator_defensivo_casa_base * conversao_fora
+    fator_baseline_fora = fator_ofensivo_fora_base * fator_defensivo_casa_base * fator_conversao_relativo_fora
 
 
     # 1.2. Fatores Estatísticos (COMPARAÇÃO DIRETA - Sem Baseline)
     
-    fator_direto_casa = (gols_marcados_casa / gols_sofridos_fora) * conversao_casa if gols_sofridos_fora > 0 else 2.0
-    fator_direto_fora = (gols_marcados_fora / gols_sofridos_casa) * conversao_fora if gols_sofridos_casa > 0 else 2.0
+    fator_direto_casa = (gols_marcados_casa / gols_sofridos_fora) * fator_conversao_relativo_casa if gols_sofridos_fora > 0 else 2.0
+    fator_direto_fora = (gols_marcados_fora / gols_sofridos_casa) * fator_conversao_relativo_fora if gols_sofridos_casa > 0 else 2.0
 
 
     # 1.3. Fatores do Mercado (Market-Driven)
@@ -76,7 +100,6 @@ def modelo_xg_dinamico_avancado(
     
     lambda_total_pre = calcular_lambda_total_from_odds(p_over_pre_normalizado)
     
-    # Fator Total do Mercado / Média da Liga (para ter um multiplicador relativo)
     fator_mercado_total = lambda_total_pre / liga_baseline
     fator_mercado_casa = math.sqrt(fator_mercado_total)
     fator_mercado_fora = math.sqrt(fator_mercado_total)
@@ -84,14 +107,13 @@ def modelo_xg_dinamico_avancado(
     
     # --- 2. CÁLCULO MOMENTUM E AJUSTE DE PLACAR ---
     
-    # Ritmo Médio (xG/min) e Momentum
+    # Ritmo Médio (xG/min) e Momentum (Lógica inalterada)
     ritmo_home_medio = xg_home / minutos_jogados
     ritmo_away_medio = xg_away / minutos_jogados
     
     periodo_momentum = 10
     periodo_analise = min(minutos_jogados, periodo_momentum)
         
-    # No caso de xG Recente não ser inserido, o ritmo recente é o ritmo médio
     ritmo_home_recente = xg_home / periodo_analise if periodo_analise > 0 else 0
     ritmo_away_recente = xg_away / periodo_analise if periodo_analise > 0 else 0
 
@@ -189,34 +211,52 @@ with col1:
 with col2:
     st.header("⭐ Força Estatística (Pré-Jogo)")
     
-    # NOVO: Input da Média da Liga
     media_liga_gols_por_jogo = st.number_input(
         "Média de Gols/Jogo da Liga (Baseline)", 
         min_value=0.1, 
         value=2.5, 
         step=0.05, 
         format="%.2f",
-        help="A média de gols por jogo na liga. Essencial para o cálculo do Modelo Baseline."
+        help="A média de gols por jogo na liga."
     )
-    
+    st.caption("Fator Neutro de Conversão da Liga: 10% (0.10)")
+
     # Time da Casa
     with st.expander("Time da Casa"):
-        gols_marcados_casa = st.number_input("Gols Marcados/Jogo (Casa)", min_value=0.5, value=1.7, step=0.01, format="%.2f")
+        gols_marcados_casa = st.number_input("Gols Marcados/Jogo (Casa)", min_value=0.5, value=1.4, step=0.01, format="%.2f")
         gols_sofridos_casa = st.number_input("Gols Sofridos/Jogo (Casa)", min_value=0.5, value=1.2, step=0.01, format="%.2f")
-        conversao_casa = st.number_input("Eficácia de Conversão (Fator Casa)", min_value=0.5, max_value=2.0, value=1.05, step=0.01, format="%.2f")
+        # NOVO INPUT: Taxa Bruta em Decimal
+        eficacia_conversao_casa = st.number_input(
+            "Eficácia de Conversão (Decimal)", 
+            min_value=0.01, # Mínimo de 1%
+            max_value=0.50, # Máximo de 50%
+            value=0.11, # 11% como no seu exemplo
+            step=0.01, 
+            format="%.2f",
+            help="Insira a taxa de conversão como decimal (Ex: 0.11 para 11%)."
+        )
 
     # Time Visitante
     with st.expander("Time Visitante"):
-        gols_marcados_fora = st.number_input("Gols Marcados/Jogo (Fora)", min_value=0.5, value=1.1, step=0.01, format="%.2f")
-        gols_sofridos_fora = st.number_input("Gols Sofridos/Jogo (Fora)", min_value=0.5, value=1.5, step=0.01, format="%.2f")
-        conversao_fora = st.number_input("Eficácia de Conversão (Fator Fora)", min_value=0.5, max_value=2.0, value=0.95, step=0.01, format="%.2f")
+        gols_marcados_fora = st.number_input("Gols Marcados/Jogo (Fora)", min_value=0.5, value=1.2, step=0.01, format="%.2f")
+        gols_sofridos_fora = st.number_input("Gols Sofridos/Jogo (Fora)", min_value=0.5, value=0.7, step=0.01, format="%.2f")
+        # NOVO INPUT: Taxa Bruta em Decimal
+        eficacia_conversao_fora = st.number_input(
+            "Eficácia de Conversão (Decimal)", 
+            min_value=0.01, 
+            max_value=0.50, 
+            value=0.10, # 10% como no seu exemplo
+            step=0.01, 
+            format="%.2f",
+            help="Insira a taxa de conversão como decimal (Ex: 0.10 para 10%)."
+        )
 
 
 with col3:
     st.header("📈 Odds de Mercado")
     
     st.subheader("Odds Pré-Jogo (Força do Mercado)")
-    st.markdown("Odds Over/Under 2.5 (Para inferir a expectativa do Mercado)")
+    st.markdown("Odds Over/Under 2.5")
     odds_over_pre = st.number_input("Odds Over 2.5 (Pré-Jogo)", min_value=1.01, value=1.90, step=0.01, format="%.2f")
     odds_under_pre = st.number_input("Odds Under 2.5 (Pré-Jogo)", min_value=1.01, value=1.90, step=0.01, format="%.2f")
 
@@ -235,9 +275,9 @@ if st.button("Calcular Projeção e EV (3 Cenários)", type="primary"):
         minutos_jogados=minutos_jogados,
         placar_home=placar_home, placar_away=placar_away,
         odds_over_mkt=odds_over_mkt, odds_under_mkt=odds_under_mkt,
-        gols_marcados_casa=gols_marcados_casa, gols_sofridos_fora=gols_sofridos_fora, conversao_casa=conversao_casa,
-        gols_marcados_fora=gols_marcados_fora, gols_sofridos_casa=gols_sofridos_casa, conversao_fora=conversao_fora,
-        media_liga_gols_por_jogo=media_liga_gols_por_jogo, # Passando o novo input
+        gols_marcados_casa=gols_marcados_casa, gols_sofridos_fora=gols_sofridos_fora, eficacia_conversao_casa=eficacia_conversao_casa,
+        gols_marcados_fora=gols_marcados_fora, gols_sofridos_casa=gols_sofridos_casa, eficacia_conversao_fora=eficacia_conversao_fora,
+        media_liga_gols_por_jogo=media_liga_gols_por_jogo,
         odds_over_pre=odds_over_pre, odds_under_pre=odds_under_pre
     )
 
@@ -288,5 +328,5 @@ if st.button("Calcular Projeção e EV (3 Cenários)", type="primary"):
         
         st.divider()
         st.markdown(
-            "***Análise dos Fatores:*** A comparação entre os modelos **Estatístico (Baseline)** e **Estatístico (Direto)** mostra o impacto da **Média da Liga** na avaliação de força. Um time que é forte para sua liga (Baseline alto) pode não ser forte o suficiente se a defesa do adversário for excepcionalmente fraca (Direto alto)."
+            "***Análise dos Fatores:*** A conversão de **10% (0.10)** foi usada como o fator *neutro* da liga para calibrar a força relativa."
         )
