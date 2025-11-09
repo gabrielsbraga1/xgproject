@@ -11,6 +11,7 @@ def calcular_lambda_total_from_odds(p_over):
     usando um método de aproximação.
     """
     # A curva de probabilidade vs Lambda não é linear. Estes são pontos de referência.
+    # Esta função ainda usa o P(Over 2.5) como input principal para manter a simplicidade.
     if p_over >= 0.7: return 3.2 
     if p_over >= 0.6: return 2.8
     if p_over >= 0.5: return 2.4
@@ -33,11 +34,13 @@ def modelo_xg_dinamico_avancado(
     placar_home, placar_away,
     odds_over_mkt, odds_under_mkt,
     # Métricas Estatísticas
-    gols_marcados_casa, gols_sofridos_fora, eficacia_conversao_casa, # NOVO: eficacia_conversao_casa
-    gols_marcados_fora, gols_sofridos_casa, eficacia_conversao_fora, # NOVO: eficacia_conversao_fora
+    gols_marcados_casa, gols_sofridos_fora, eficacia_conversao_casa,
+    gols_marcados_fora, gols_sofridos_casa, eficacia_conversao_fora,
     media_liga_gols_por_jogo,
-    # Odds Pré-Jogo
+    # Odds Pré-Jogo (AGORA COM TODOS OS NOVOS INPUTS)
     odds_over_pre, odds_under_pre,
+    odds_1, odds_x, odds_2,
+    odds_over_1_5_pre, odds_under_1_5_pre,
     duracao=90
 ):
     
@@ -49,13 +52,8 @@ def modelo_xg_dinamico_avancado(
     # Prevenção de divisão por zero
     liga_baseline = media_liga_gols_por_jogo if media_liga_gols_por_jogo > 0 else 2.5
 
-    # 1.1. Fatores Estatísticos (BASELINE - Padrão)
-    
-    # NOVO CÁLCULO DE FORÇA: Usamos a conversão para modular a força ofensiva.
-    # Ex: (Gols Marcados / Média Liga) * (Média Liga / Gols Sofridos) * Fator Conversão
-    
     # Definindo um FATOR NEUTRO DE CONVERSÃO para a liga (ex: 10% ou 0.10)
-    FATOR_NEUTRO_CONVERSAO = 0.10 # 10% é uma média razoável para ligas de alto nível.
+    FATOR_NEUTRO_CONVERSAO = 0.10 # Se sua liga tem conversão média diferente, mude este valor.
 
     # O fator de conversão é a força relativa: (Conversão Time / Conversão Média Liga)
     fator_conversao_relativo_casa = eficacia_conversao_casa / FATOR_NEUTRO_CONVERSAO if FATOR_NEUTRO_CONVERSAO > 0 else 1.0
@@ -79,12 +77,17 @@ def modelo_xg_dinamico_avancado(
 
     # 1.3. Fatores do Mercado (Market-Driven)
     
+    # Cálculo do Lambda (Market-Driven) usando o O/U 2.5 (Padrão)
     p_over_pre = calcular_prob_implicita(odds_over_pre)
     p_under_pre = calcular_prob_implicita(odds_under_pre)
-    p_over_pre_normalizado = p_over_pre / (p_over_pre + p_under_pre)
     
+    # Cálculo da probabilidade normalizada (removendo a margem da casa de apostas)
+    margem = (p_over_pre + p_under_pre) - 1
+    p_over_pre_normalizado = p_over_pre / (1 + margem) if (1 + margem) > 0 else 0
+
     lambda_total_pre = calcular_lambda_total_from_odds(p_over_pre_normalizado)
     
+    # Fator Total do Mercado / Média da Liga 
     fator_mercado_total = lambda_total_pre / liga_baseline
     fator_mercado_casa = math.sqrt(fator_mercado_total)
     fator_mercado_fora = math.sqrt(fator_mercado_total)
@@ -210,12 +213,11 @@ with col2:
     with st.expander("Time da Casa"):
         gols_marcados_casa = st.number_input("Gols Marcados/Jogo (Casa)", min_value=0.5, value=1.4, step=0.01, format="%.2f")
         gols_sofridos_casa = st.number_input("Gols Sofridos/Jogo (Casa)", min_value=0.5, value=1.2, step=0.01, format="%.2f")
-        # NOVO INPUT: Taxa Bruta em Decimal
         eficacia_conversao_casa = st.number_input(
             "Eficácia de Conversão (Decimal)", 
-            min_value=0.01, # Mínimo de 1%
-            max_value=0.50, # Máximo de 50%
-            value=0.11, # 11% como no seu exemplo
+            min_value=0.01, 
+            max_value=0.50, 
+            value=0.11, 
             step=0.01, 
             format="%.2f",
             help="Insira a taxa de conversão como decimal (Ex: 0.11 para 11%)."
@@ -225,12 +227,11 @@ with col2:
     with st.expander("Time Visitante"):
         gols_marcados_fora = st.number_input("Gols Marcados/Jogo (Fora)", min_value=0.5, value=1.2, step=0.01, format="%.2f")
         gols_sofridos_fora = st.number_input("Gols Sofridos/Jogo (Fora)", min_value=0.5, value=0.7, step=0.01, format="%.2f")
-        # NOVO INPUT: Taxa Bruta em Decimal
         eficacia_conversao_fora = st.number_input(
             "Eficácia de Conversão (Decimal)", 
             min_value=0.01, 
             max_value=0.50, 
-            value=0.10, # 10% como no seu exemplo
+            value=0.10, 
             step=0.01, 
             format="%.2f",
             help="Insira a taxa de conversão como decimal (Ex: 0.10 para 10%)."
@@ -241,9 +242,27 @@ with col3:
     st.header("📈 Odds de Mercado")
     
     st.subheader("Odds Pré-Jogo (Força do Mercado)")
-    st.markdown("Odds Over/Under 2.5")
+    
+    # NOVOS INPUTS 1X2
+    st.markdown("Odds 1X2")
+    col3_1, col3_2, col3_3 = st.columns(3)
+    with col3_1:
+        odds_1 = st.number_input("Odds 1 (Casa)", min_value=1.01, value=2.20, step=0.01, format="%.2f")
+    with col3_2:
+        odds_x = st.number_input("Odds X (Empate)", min_value=1.01, value=3.40, step=0.01, format="%.2f")
+    with col3_3:
+        odds_2 = st.number_input("Odds 2 (Fora)", min_value=1.01, value=3.20, step=0.01, format="%.2f")
+    
+    # NOVOS INPUTS O/U 1.5
+    st.markdown("Odds Over/Under 1.5")
+    odds_over_1_5_pre = st.number_input("Odds Over 1.5 (Pré-Jogo)", min_value=1.01, value=1.30, step=0.01, format="%.2f")
+    odds_under_1_5_pre = st.number_input("Odds Under 1.5 (Pré-Jogo)", min_value=1.01, value=3.40, step=0.01, format="%.2f")
+
+    # INPUTS O/U 2.5 (Usados para o Lambda)
+    st.markdown("Odds Over/Under 2.5 (Usado para o Lambda)")
     odds_over_pre = st.number_input("Odds Over 2.5 (Pré-Jogo)", min_value=1.01, value=1.90, step=0.01, format="%.2f")
     odds_under_pre = st.number_input("Odds Under 2.5 (Pré-Jogo)", min_value=1.01, value=1.90, step=0.01, format="%.2f")
+
 
     st.subheader("Odds In-Play (Para EV)")
     st.markdown("Odds Over/Under 0.5 Gols Restantes (Odds atuais)")
@@ -263,7 +282,10 @@ if st.button("Calcular Projeção e EV (3 Cenários)", type="primary"):
         gols_marcados_casa=gols_marcados_casa, gols_sofridos_fora=gols_sofridos_fora, eficacia_conversao_casa=eficacia_conversao_casa,
         gols_marcados_fora=gols_marcados_fora, gols_sofridos_casa=gols_sofridos_casa, eficacia_conversao_fora=eficacia_conversao_fora,
         media_liga_gols_por_jogo=media_liga_gols_por_jogo,
-        odds_over_pre=odds_over_pre, odds_under_pre=odds_under_pre
+        # NOVOS INPUTS PASSADOS
+        odds_over_pre=odds_over_pre, odds_under_pre=odds_under_pre,
+        odds_1=odds_1, odds_x=odds_x, odds_2=odds_2,
+        odds_over_1_5_pre=odds_over_1_5_pre, odds_under_1_5_pre=odds_under_1_5_pre
     )
 
     if erro:
@@ -313,5 +335,5 @@ if st.button("Calcular Projeção e EV (3 Cenários)", type="primary"):
         
         st.divider()
         st.markdown(
-            "***Análise dos Fatores:*** A conversão de **10% (0.10)** foi usada como o fator *neutro* da liga para calibrar a força relativa."
+            "***Observação:*** O cálculo do **Lambda Total Pré-Jogo** para o **Modelo Mercado** continua utilizando a probabilidade implícita do **Over/Under 2.5**, conforme a função `calcular_lambda_total_from_odds`. Os inputs de 1X2 e O/U 1.5 estão disponíveis para futuras calibrações de *spread* de gols."
         )
