@@ -290,25 +290,3 @@ if st.button("Calcular Projeção e EV (3 Cenários)", type="primary"):
         st.markdown(
             "***Análise dos Fatores:*** A comparação entre os modelos **Estatístico (Baseline)** e **Estatístico (Direto)** mostra o impacto da **Média da Liga** na avaliação de força. Um time que é forte para sua liga (Baseline alto) pode não ser forte o suficiente se a defesa do adversário for excepcionalmente fraca (Direto alto)."
         )
-
----
-
-## 🔑 O que Acontece no Novo Código
-
-O seu aplicativo agora gerencia a força estatística em **dois caminhos paralelos** para a projeção:
-
-### 1. Modelo Estatístico (Baseline)
-
-* **Fórmula:** Utiliza o valor que você insere em "**Média de Gols/Jogo da Liga**" (Baseline).
-* **Finalidade:** É o método mais padrão. Ele mede o quão bom um time é em **termos absolutos** (comparado à liga).
-* **Cálculo (Exemplo $Fator_{Casa}$):**
-    $$Fator_{Casa} = \left(\frac{Gols Marcados_{Casa}}{Média_{Liga}}\right) \times \left(\frac{Média_{Liga}}{Gols Sofridos_{Fora}}\right) \times Conversão_{Casa}$$
-
-### 2. Modelo Estatístico (Direto)
-
-* **Fórmula:** **Ignora** a Média da Liga. Compara diretamente a capacidade ofensiva do ataque de um time contra a fragilidade defensiva do outro.
-* **Finalidade:** Útil quando a Média da Liga não é conhecida ou para simular um cenário onde o confronto direto é a única métrica relevante.
-* **Cálculo (Exemplo $Fator_{Casa}$):**
-    $$Fator_{Casa} = \left(\frac{Gols Marcados_{Casa}}{Gols Sofridos_{Fora}}\right) \times Conversão_{Casa}$$
-
-Ambos os fatores, juntamente com o fator inferido pelas Odds Pré-Jogo, são usados para gerar resultados separados, permitindo que você compare qual visão (absoluta, relativa ou mercado) gera um **Valor Esperado (EV)** mais alto.
