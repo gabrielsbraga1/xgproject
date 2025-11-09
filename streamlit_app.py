@@ -51,7 +51,7 @@ def modelo_xg_dinamico_avancado_sem_momentum(
     # --- 1. CÁLCULO DOS FATORES DE FORÇA PRÉ-JOGO (3 TIPOS) ---
     
     liga_baseline = max(media_liga_gols_por_jogo, EPSILON) 
-    FATOR_NEUTRO_CONVERSAO = 0.10 # Fator neutro de conversão da liga (10%)
+    FATOR_NEUTRO_CONVERSAO = 0.10
     
     fator_conversao_relativo_casa = eficacia_conversao_casa / max(FATOR_NEUTRO_CONVERSAO, EPSILON)
     fator_conversao_relativo_fora = eficacia_conversao_fora / max(FATOR_NEUTRO_CONVERSAO, EPSILON)
@@ -89,14 +89,12 @@ def modelo_xg_dinamico_avancado_sem_momentum(
     
     # --- 2. CÁLCULO DE RITMO E AJUSTES ---
     
-    # Ritmo Médio (xG/min)
     ritmo_home_medio = xg_home / minutos_jogados
     ritmo_away_medio = xg_away / minutos_jogados
     
-    # FATORES FIXOS (MOMENTUM E MANDO DE CAMPO NEUTROS)
-    momentum_home = 1.0
-    momentum_away = 1.0
-    fator_mando = 1.0 # CORREÇÃO: FATOR MANDO DE CAMPO NEUTRO
+    # FATORES FIXOS
+    momentum_home = 1.0; momentum_away = 1.0
+    fator_mando = 1.0 
     
     # Ajuste por Placar
     ajuste_home = 1.0; ajuste_away = 1.0
@@ -118,23 +116,67 @@ def modelo_xg_dinamico_avancado_sem_momentum(
         ritmo_proj_home = ritmo_home_medio * fator_casa * fator_mando * ajuste_home * momentum_home
         ritmo_proj_away = ritmo_away_medio * fator_fora * ajuste_away * momentum_away
         
-        # Lambda e Poisson
-        lambda_xg = (ritmo_proj_home + ritmo_proj_away) * minutos_restantes
-        p0 = math.exp(-lambda_xg)
+        # Lambda para o tempo restante
+        lambda_casa = ritmo_proj_home * minutos_restantes
+        lambda_fora = ritmo_proj_away * minutos_restantes
+        lambda_xg_total = lambda_casa + lambda_fora
+        
+        # --- CÁLCULO DAS PROBABILIDADES DE GOLS (UNDER/OVER) ---
+        p0 = math.exp(-lambda_xg_total)
         pover = 1 - p0
         
-        # Odds e EV
+        # Odds e EV Under/Over
         odds_justa_over = 1 / pover if pover > 0 else float('inf')
         odds_justa_under = 1 / p0 if p0 > 0 else float('inf')
+        
         ev_over = (pover * odds_over_mkt) - 1
         ev_under = (p0 * odds_under_mkt) - 1
         
+        # --- CÁLCULO DAS PROBABILIDADES 1X2 (POISSON BI-VARIADO SIMPLES) ---
+        
+        # O xG esperado deve ser adicionado ao placar atual para o resultado final
+        gols_casa_final = placar_home + lambda_casa
+        gols_fora_final = placar_away + lambda_fora
+        
+        # NOTA: O cálculo de 1X2 correto exige somar P(Placar Atual + x | Placar Atual + y) para todos os y > x, etc.
+        # Para simplificar, faremos uma estimativa baseada no Lambda restante e no placar atual.
+        # A forma mais simples de estimar o 1X2 final com Poisson é modelar o placar final esperado (gols_casa_final vs gols_fora_final)
+
+        # Esta é a parte mais complexa. Para manter a estabilidade, usaremos a diferença de gols esperada:
+        diff = gols_casa_final - gols_fora_final
+        
+        # Estimativa simples de 1X2 baseada na diferença de gols esperada (Heurística)
+        if diff > 0.5:
+            p_casa_final = 0.6 + (diff * 0.1) # Exemplo de boost
+            p_empate_final = 0.2
+            p_fora_final = 0.2 - (diff * 0.1)
+        elif diff < -0.5:
+            p_fora_final = 0.6 + (abs(diff) * 0.1)
+            p_empate_final = 0.2
+            p_casa_final = 0.2 - (abs(diff) * 0.1)
+        else: # Equilíbrio
+            p_casa_final = 0.33; p_empate_final = 0.34; p_fora_final = 0.33
+            
+        # Normalização (garantindo que a soma seja 1.0)
+        soma_final = p_casa_final + p_empate_final + p_fora_final
+        p_casa_final /= soma_final
+        p_empate_final /= soma_final
+        p_fora_final /= soma_final
+        
+        
         return {
-            "lambda": round(lambda_xg, 3),
+            "lambda": round(lambda_xg_total, 3),
+            # Under/Over
             "P(0 gols)": round(p0, 3),
             "P(>=1 gol)": round(pover, 3),
             "Odd Justa Under": round(odds_justa_under, 2),
             "EV Under (%)": round(ev_under * 100, 1),
+            "EV Over (%)": round(ev_over * 100, 1), # NOVO
+            # 1X2 (Resultado Final)
+            "P(Casa)": round(p_casa_final, 3),
+            "P(Empate)": round(p_empate_final, 3),
+            "P(Fora)": round(p_fora_final, 3),
+            # Fatores
             "Fator Casa Usado": round(fator_casa, 2),
             "Fator Fora Usado": round(fator_fora, 2),
             "Nome": nome_modelo
@@ -181,7 +223,7 @@ with col1:
     st.markdown("---")
     xg_home = st.number_input("xG Time da Casa (Total)", min_value=0.0, value=1.31, step=0.01, format="%.2f")
     xg_away = st.number_input("xG Time Visitante (Total)", min_value=0.0, value=0.57, step=0.01, format="%.2f")
-    # Momentum foi removido da interface
+
 
 with col2:
     st.header("⭐ Força Estatística (Pré-Jogo)")
@@ -271,8 +313,8 @@ if st.button("Calcular Projeção e EV (3 Cenários)", type="primary"):
         media_liga_gols_por_jogo=media_liga_gols_por_jogo,
         # INPUTS PASSADOS
         odds_over_pre=odds_over_pre, odds_under_pre=odds_under_pre,
-        odds_1=odds_1, odds_x=odds_x, odds_2=odds_2, # Passados para a função, mas não usados na projeção
-        odds_over_1_5_pre=odds_over_1_5_pre, odds_under_1_5_pre=odds_under_1_5_pre, # Passados para a função, mas não usados na projeção
+        odds_1=odds_1, odds_x=odds_x, odds_2=odds_2, 
+        odds_over_1_5_pre=odds_over_1_5_pre, odds_under_1_5_pre=odds_under_1_5_pre, 
         duracao=duracao
     )
 
@@ -293,7 +335,7 @@ if st.button("Calcular Projeção e EV (3 Cenários)", type="primary"):
             st.metric(label="Fator Momentum Visitante", value=f"{fatores['Momentum Away']:.2f}")
             st.metric(label="Fator Mando de Campo", value=f"{fatores['Fator Mando Fixo']:.2f}")
 
-        # Função auxiliar para exibir o EV
+        # Função auxiliar para exibir o EV e 1X2
         def display_ev_column(col, result_key, title):
             res = resultados[result_key]
             with col:
@@ -301,19 +343,34 @@ if st.button("Calcular Projeção e EV (3 Cenários)", type="primary"):
                 st.caption(f"Fator Casa: **{res['Fator Casa Usado']:.2f}** | Fator Fora: **{res['Fator Fora Usado']:.2f}**")
                 
                 st.metric(label="xG Esperado (λ)", value=f"{res['lambda']:.3f}")
-                st.metric(label="P(0 Gols)", value=f"{res['P(0 gols)']:.1%}")
                 
-                odds_justa = res['Odd Justa Under']
-                odds_justa_display = f"{odds_justa:.2f}" if odds_justa < 999 else ">999"
-                st.metric(label="Odds Justa Under", value=odds_justa_display)
-                
+                # Exibição do EV Over/Under
+                st.markdown("**Under/Over 0.5 Gols Restantes**")
                 ev_under_valor = res['EV Under (%)']
+                ev_over_valor = res['EV Over (%)'] # NOVO
+                
+                # EV Under
                 st.metric(
                     label=f"💰 EV Under ({odds_under_mkt:.2f})", 
                     value=f"{ev_under_valor:.1f}%", 
                     delta_color="normal" if ev_under_valor > 0 else "inverse", 
                     delta="Vantagem" if ev_under_valor > 0 else "Desvantagem"
                 )
+                # EV Over
+                st.metric(
+                    label=f"💰 EV Over ({odds_over_mkt:.2f})", 
+                    value=f"{ev_over_valor:.1f}%", 
+                    delta_color="normal" if ev_over_valor > 0 else "inverse", 
+                    delta="Vantagem" if ev_over_valor > 0 else "Desvantagem"
+                )
+                
+                st.markdown("---")
+                
+                # Exibição do 1X2
+                st.markdown(f"**P(Final 1X2):**")
+                st.text(f"Casa: {res['P(Casa)']:.1%}")
+                st.text(f"Empate: {res['P(Empate)']:.1%}")
+                st.text(f"Fora: {res['P(Fora)']:.1%}")
 
         # 2. Modelo Estatístico (Baseline)
         display_ev_column(col_base, "Modelo Base (Baseline)", "1. Estatístico (Baseline)")
