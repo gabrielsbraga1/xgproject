@@ -1,18 +1,3 @@
-Sim, é totalmente possível e a sua proposta de usar a eficácia de conversão para descontar o xG é uma forma excelente e avançada de modelar a força ofensiva real de um time.
-
-A nova lógica implementada fará o seguinte:
-
-Input em Decimal: O usuário insere a eficácia de conversão (Ex: 0.11 para 11%).
-
-Cálculo da Força Ofensiva Pura: A força de um time será agora modelada pela métrica Gols Marcados / Gols Esperados (xG), que você fornecerá.
-
-Ajuste do Fator: A eficácia de conversão é usada para modular o fator de força estatística, garantindo que o modelo seja mais preciso que a simples razão de gols.
-
-🛠️ Código Completo Atualizado (streamlit_app.py)
-Substitua todo o seu código por esta nova versão. As principais mudanças estão na Coluna 2 (nova entrada para a taxa de conversão) e no Cálculo da Força Estatística dentro da função principal.
-
-Python
-
 import streamlit as st
 import math
 
