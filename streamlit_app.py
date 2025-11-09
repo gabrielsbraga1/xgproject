@@ -9,10 +9,7 @@ import math
 EPSILON = 1e-3 
 
 def calcular_lambda_total_from_odds(p_over):
-    """
-    Estima o Lambda (Expected Total Goals) a partir da probabilidade P(Over 2.5 Gols),
-    usando um método de aproximação.
-    """
+    """Estima o Lambda (Expected Total Goals) a partir da probabilidade P(Over 2.5 Gols)."""
     if p_over >= 0.7: return 3.2 
     if p_over >= 0.6: return 2.8
     if p_over >= 0.5: return 2.4
@@ -26,10 +23,10 @@ def calcular_prob_implicita(odds):
 
 
 # ==============================================================================
-# 🎯 FUNÇÃO DO MODELO xG DINÂMICO PRINCIPAL (ESTÁVEL)
+# 🎯 FUNÇÃO DO MODELO xG DINÂMICO PRINCIPAL CORRIGIDA
 # ==============================================================================
 
-def modelo_xg_dinamico_avancado_sem_momentum(
+def modelo_xg_dinamico_avancado_estavel(
     xg_home, xg_away,
     minutos_jogados,
     placar_home, placar_away,
@@ -56,7 +53,7 @@ def modelo_xg_dinamico_avancado_sem_momentum(
     fator_conversao_relativo_casa = eficacia_conversao_casa / max(FATOR_NEUTRO_CONVERSAO, EPSILON)
     fator_conversao_relativo_fora = eficacia_conversao_fora / max(FATOR_NEUTRO_CONVERSAO, EPSILON)
 
-    # 1.1. Fatores Estatísticos (BASELINE - Padrão)
+    # Aplicação do Fator Base
     fator_ofensivo_casa_base = gols_marcados_casa / liga_baseline
     fator_defensivo_fora_base = liga_baseline / max(gols_sofridos_fora, EPSILON)
     fator_baseline_casa = fator_ofensivo_casa_base * fator_defensivo_fora_base * fator_conversao_relativo_casa
@@ -65,23 +62,15 @@ def modelo_xg_dinamico_avancado_sem_momentum(
     fator_defensivo_casa_base = liga_baseline / max(gols_sofridos_casa, EPSILON)
     fator_baseline_fora = fator_ofensivo_fora_base * fator_defensivo_casa_base * fator_conversao_relativo_fora
 
-
-    # 1.2. Fatores Estatísticos (COMPARAÇÃO DIRETA - Sem Baseline)
-    
+    # Fatores Direto e Mercado (Lógica Inalterada)
     fator_direto_casa = (gols_marcados_casa / max(gols_sofridos_fora, EPSILON)) * fator_conversao_relativo_casa
     fator_direto_fora = (gols_marcados_fora / max(gols_sofridos_casa, EPSILON)) * fator_conversao_relativo_fora
-
-
-    # 1.3. Fatores do Mercado (Market-Driven)
     
     p_over_pre = calcular_prob_implicita(odds_over_pre)
     p_under_pre = calcular_prob_implicita(odds_under_pre)
-    
     margem = (p_over_pre + p_under_pre) - 1
     p_over_pre_normalizado = p_over_pre / max(1 + margem, EPSILON) 
-
     lambda_total_pre = calcular_lambda_total_from_odds(p_over_pre_normalizado)
-    
     fator_mercado_total = lambda_total_pre / liga_baseline
     fator_mercado_casa = math.sqrt(fator_mercado_total)
     fator_mercado_fora = math.sqrt(fator_mercado_total)
@@ -96,15 +85,16 @@ def modelo_xg_dinamico_avancado_sem_momentum(
     momentum_home = 1.0; momentum_away = 1.0
     fator_mando = 1.0 
     
-    # Ajuste por Placar
+    # AJUSTE DE PLACAR SUAVIZADO
     ajuste_home = 1.0; ajuste_away = 1.0
     if placar_home > placar_away:
-        ajuste_home = 0.7; ajuste_away = 1.4
+        ajuste_home = 0.85 # Menos redução (antes era 0.7)
+        ajuste_away = 1.15 # Menos boost (antes era 1.4)
     elif placar_home < placar_away:
-        ajuste_home = 1.4; ajuste_away = 0.7
-
-    minutos_restantes = duracao - minutos_jogados
+        ajuste_home = 1.15
+        ajuste_away = 0.85
     
+    minutos_restantes = duracao - minutos_jogados
     if minutos_restantes <= 0:
         return None, "Erro: O jogo já acabou."
         
@@ -112,56 +102,53 @@ def modelo_xg_dinamico_avancado_sem_momentum(
     
     def run_projection(fator_casa, fator_fora, nome_modelo):
         
-        # Ritmo Projetado
-        ritmo_proj_home = ritmo_home_medio * fator_casa * fator_mando * ajuste_home * momentum_home
-        ritmo_proj_away = ritmo_away_medio * fator_fora * ajuste_away * momentum_away
+        # FATOR SORTE (LUCK FACTOR): Gols / xG
+        # Aplicamos um LIMITE MÁXIMO de 1.5x (50% acima do que o xG sugere)
+        luck_casa = placar_home / max(xg_home, EPSILON) 
+        luck_fora = placar_away / max(xg_away, EPSILON)
+
+        fator_sorte_casa = min(luck_casa, 1.5) # Limita a 1.5x
+        fator_sorte_fora = min(luck_fora, 1.5) # Limita a 1.5x
+
+        # Ritmo Projetado: xG Médio * Força Pré-Jogo * Mando * Ajuste Placar * FATOR SORTE
+        ritmo_proj_home = ritmo_home_medio * fator_casa * fator_mando * ajuste_home * fator_sorte_casa
+        ritmo_proj_away = ritmo_away_medio * fator_fora * ajuste_away * fator_sorte_fora
         
-        # Lambda para o tempo restante
+        # Lambda e Poisson
         lambda_casa = ritmo_proj_home * minutos_restantes
         lambda_fora = ritmo_proj_away * minutos_restantes
         lambda_xg_total = lambda_casa + lambda_fora
         
-        # --- CÁLCULO DAS PROBABILIDADES DE GOLS (UNDER/OVER) ---
         p0 = math.exp(-lambda_xg_total)
         pover = 1 - p0
         
-        # Odds e EV Under/Over
+        # Odds e EV
         odds_justa_over = 1 / pover if pover > 0 else float('inf')
         odds_justa_under = 1 / p0 if p0 > 0 else float('inf')
         
         ev_over = (pover * odds_over_mkt) - 1
         ev_under = (p0 * odds_under_mkt) - 1
         
-        # --- CÁLCULO DAS PROBABILIDADES 1X2 (POISSON BI-VARIADO SIMPLES) ---
-        
-        # O xG esperado deve ser adicionado ao placar atual para o resultado final
+        # CÁLCULO 1X2 (Heurística)
         gols_casa_final = placar_home + lambda_casa
         gols_fora_final = placar_away + lambda_fora
-        
-        # NOTA: O cálculo de 1X2 correto exige somar P(Placar Atual + x | Placar Atual + y) para todos os y > x, etc.
-        # Para simplificar, faremos uma estimativa baseada no Lambda restante e no placar atual.
-        # A forma mais simples de estimar o 1X2 final com Poisson é modelar o placar final esperado (gols_casa_final vs gols_fora_final)
-
-        # Esta é a parte mais complexa. Para manter a estabilidade, usaremos a diferença de gols esperada:
         diff = gols_casa_final - gols_fora_final
         
-        # Estimativa simples de 1X2 baseada na diferença de gols esperada (Heurística)
         if diff > 0.5:
-            p_casa_final = 0.6 + (diff * 0.1) # Exemplo de boost
+            p_casa_final = 0.6 + (diff * 0.1)
             p_empate_final = 0.2
             p_fora_final = 0.2 - (diff * 0.1)
         elif diff < -0.5:
             p_fora_final = 0.6 + (abs(diff) * 0.1)
             p_empate_final = 0.2
             p_casa_final = 0.2 - (abs(diff) * 0.1)
-        else: # Equilíbrio
+        else:
             p_casa_final = 0.33; p_empate_final = 0.34; p_fora_final = 0.33
             
-        # Normalização (garantindo que a soma seja 1.0)
         soma_final = p_casa_final + p_empate_final + p_fora_final
-        p_casa_final /= soma_final
-        p_empate_final /= soma_final
-        p_fora_final /= soma_final
+        p_casa_final /= max(soma_final, EPSILON)
+        p_empate_final /= max(soma_final, EPSILON)
+        p_fora_final /= max(soma_final, EPSILON)
         
         
         return {
@@ -171,7 +158,7 @@ def modelo_xg_dinamico_avancado_sem_momentum(
             "P(>=1 gol)": round(pover, 3),
             "Odd Justa Under": round(odds_justa_under, 2),
             "EV Under (%)": round(ev_under * 100, 1),
-            "EV Over (%)": round(ev_over * 100, 1), # NOVO
+            "EV Over (%)": round(ev_over * 100, 1),
             # 1X2 (Resultado Final)
             "P(Casa)": round(p_casa_final, 3),
             "P(Empate)": round(p_empate_final, 3),
@@ -179,6 +166,8 @@ def modelo_xg_dinamico_avancado_sem_momentum(
             # Fatores
             "Fator Casa Usado": round(fator_casa, 2),
             "Fator Fora Usado": round(fator_fora, 2),
+            "Fator Sorte Casa": round(fator_sorte_casa, 2),
+            "Fator Sorte Fora": round(fator_sorte_fora, 2),
             "Nome": nome_modelo
         }
 
@@ -187,7 +176,7 @@ def modelo_xg_dinamico_avancado_sem_momentum(
     resultados["Modelo Direto (Comparação)"] = run_projection(fator_direto_casa, fator_direto_fora, "Estatístico (Direto)")
     resultados["Modelo Mercado"] = run_projection(fator_mercado_casa, fator_mercado_fora, "Expectativa Mercado")
     
-    # Fatores Dinâmicos (Momentum e Mando são 1.0)
+    # Fatores Fixo
     resultados["Fatores Dinâmicos"] = {
         "Momentum Home": 1.0, 
         "Momentum Away": 1.0,
@@ -197,16 +186,18 @@ def modelo_xg_dinamico_avancado_sem_momentum(
     return resultados, None
 
 # ==============================================================================
-# 🏠 INTERFACE STREAMLIT
+# 🏠 INTERFACE STREAMLIT (NÃO PRECISA DE ALTERAÇÕES GRANDES)
 # ==============================================================================
 
+# (O resto do código da interface Streamlit permanece inalterado)
+# ...
 st.set_page_config(
-    page_title="Modelo Dinâmico xG (Estável)", 
+    page_title="Modelo Dinâmico xG (Estável c/ Luck)", 
     layout="wide"
 )
 
-st.title("⚽ Modelo Dinâmico xG (Estável)")
-st.markdown("Projeta gols restantes focando apenas na **Força Pré-Jogo**, no **Placar** e no **Ritmo Médio**.")
+st.title("⚽ Modelo Dinâmico xG (Estável c/ Luck)")
+st.markdown("Projeta gols restantes com ajuste suavizado por **Placar** e **Fator de Sorte (Luck)** limitado.")
 
 st.divider()
 
@@ -313,8 +304,8 @@ if st.button("Calcular Projeção e EV (3 Cenários)", type="primary"):
         media_liga_gols_por_jogo=media_liga_gols_por_jogo,
         # INPUTS PASSADOS
         odds_over_pre=odds_over_pre, odds_under_pre=odds_under_pre,
-        odds_1=odds_1, odds_x=odds_x, odds_2=odds_2, 
-        odds_over_1_5_pre=odds_over_1_5_pre, odds_under_1_5_pre=odds_under_1_5_pre, 
+        odds_1=odds_1, odds_x=odds_x, odds_2=odds_2,
+        odds_over_1_5_pre=odds_over_1_5_pre, odds_under_1_5_pre=odds_under_1_5_pre,
         duracao=duracao
     )
 
@@ -330,24 +321,25 @@ if st.button("Calcular Projeção e EV (3 Cenários)", type="primary"):
 
         # 1. Fatores Fixo
         with col_fat:
-            st.subheader("Fatores de Ajuste")
-            st.metric(label="Fator Momentum Casa", value=f"{fatores['Momentum Home']:.2f}")
-            st.metric(label="Fator Momentum Visitante", value=f"{fatores['Momentum Away']:.2f}")
-            st.metric(label="Fator Mando de Campo", value=f"{fatores['Fator Mando Fixo']:.2f}")
+            st.subheader("Fatores Aplicados")
+            st.metric(label="Fator Momentum Casa", value=f"{fatores['Momentum Home']:.2f}", help="Fixo em 1.0 (Neutro)")
+            st.metric(label="Fator Momentum Visitante", value=f"{fatores['Momentum Away']:.2f}", help="Fixo em 1.0 (Neutro)")
+            st.metric(label="Fator Mando de Campo", value=f"{fatores['Fator Mando Fixo']:.2f}", help="Fixo em 1.0 (Neutro)")
 
-        # Função auxiliar para exibir o EV e 1X2
+        # Função auxiliar para exibir o EV
         def display_ev_column(col, result_key, title):
             res = resultados[result_key]
             with col:
                 st.subheader(title)
                 st.caption(f"Fator Casa: **{res['Fator Casa Usado']:.2f}** | Fator Fora: **{res['Fator Fora Usado']:.2f}**")
-                
+                st.caption(f"Sorte Casa: **{res['Fator Sorte Casa']:.2f}** | Sorte Fora: **{res['Fator Sorte Fora']:.2f}**") # NOVO
+
                 st.metric(label="xG Esperado (λ)", value=f"{res['lambda']:.3f}")
                 
-                # Exibição do EV Over/Under
+                # EV Over/Under
                 st.markdown("**Under/Over 0.5 Gols Restantes**")
                 ev_under_valor = res['EV Under (%)']
-                ev_over_valor = res['EV Over (%)'] # NOVO
+                ev_over_valor = res['EV Over (%)'] 
                 
                 # EV Under
                 st.metric(
@@ -365,8 +357,7 @@ if st.button("Calcular Projeção e EV (3 Cenários)", type="primary"):
                 )
                 
                 st.markdown("---")
-                
-                # Exibição do 1X2
+                # 1X2
                 st.markdown(f"**P(Final 1X2):**")
                 st.text(f"Casa: {res['P(Casa)']:.1%}")
                 st.text(f"Empate: {res['P(Empate)']:.1%}")
@@ -383,5 +374,5 @@ if st.button("Calcular Projeção e EV (3 Cenários)", type="primary"):
         
         st.divider()
         st.markdown(
-            "***Estabilidade Final:*** O modelo agora projeta o xG restante de forma estável, utilizando apenas a **Força Pré-Jogo (calibrada)**, o **Placar** e o **Ritmo Médio** do jogo, sem ajustes dinâmicos."
+            "***Estabilidade Final:*** O **Fator Sorte** (Gols/xG) agora é aplicado, mas limitado a **1.5x** para evitar inflação. O **Ajuste por Placar** também foi suavizado para $0.85/1.15$."
         )
