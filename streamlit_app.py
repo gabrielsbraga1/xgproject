@@ -5,13 +5,14 @@ import math
 # ⚽ CONSTANTES E FUNÇÕES AUXILIARES
 # ==============================================================================
 
+# Valor de segurança para prevenir divisão por zero (0.001)
+EPSILON = 1e-3 
+
 def calcular_lambda_total_from_odds(p_over):
     """
     Estima o Lambda (Expected Total Goals) a partir da probabilidade P(Over 2.5 Gols),
     usando um método de aproximação.
     """
-    # A curva de probabilidade vs Lambda não é linear. Estes são pontos de referência.
-    # Esta função ainda usa o P(Over 2.5) como input principal para manter a simplicidade.
     if p_over >= 0.7: return 3.2 
     if p_over >= 0.6: return 2.8
     if p_over >= 0.5: return 2.4
@@ -25,7 +26,7 @@ def calcular_prob_implicita(odds):
 
 
 # ==============================================================================
-# 🎯 FUNÇÃO DO MODELO xG DINÂMICO PRINCIPAL
+# 🎯 FUNÇÃO DO MODELO xG DINÂMICO PRINCIPAL CORRIGIDA
 # ==============================================================================
 
 def modelo_xg_dinamico_avancado(
@@ -37,7 +38,7 @@ def modelo_xg_dinamico_avancado(
     gols_marcados_casa, gols_sofridos_fora, eficacia_conversao_casa,
     gols_marcados_fora, gols_sofridos_casa, eficacia_conversao_fora,
     media_liga_gols_por_jogo,
-    # Odds Pré-Jogo (AGORA COM TODOS OS NOVOS INPUTS)
+    # Odds Pré-Jogo
     odds_over_pre, odds_under_pre,
     odds_1, odds_x, odds_2,
     odds_over_1_5_pre, odds_under_1_5_pre,
@@ -49,45 +50,40 @@ def modelo_xg_dinamico_avancado(
 
     # --- 1. CÁLCULO DOS FATORES DE FORÇA PRÉ-JOGO (3 TIPOS) ---
     
-    # Prevenção de divisão por zero
-    liga_baseline = media_liga_gols_por_jogo if media_liga_gols_por_jogo > 0 else 2.5
+    # Prevenção de divisão por zero: garantimos que a baseline da liga não é zero
+    liga_baseline = max(media_liga_gols_por_jogo, EPSILON) 
+    FATOR_NEUTRO_CONVERSAO = 0.10 # Fator neutro de conversão da liga (10%)
+    
+    # Fator de conversão é a força relativa: (Conversão Time / Conversão Média Liga)
+    fator_conversao_relativo_casa = eficacia_conversao_casa / max(FATOR_NEUTRO_CONVERSAO, EPSILON)
+    fator_conversao_relativo_fora = eficacia_conversao_fora / max(FATOR_NEUTRO_CONVERSAO, EPSILON)
 
-    # Definindo um FATOR NEUTRO DE CONVERSÃO para a liga (ex: 10% ou 0.10)
-    FATOR_NEUTRO_CONVERSAO = 0.10 # Se sua liga tem conversão média diferente, mude este valor.
-
-    # O fator de conversão é a força relativa: (Conversão Time / Conversão Média Liga)
-    fator_conversao_relativo_casa = eficacia_conversao_casa / FATOR_NEUTRO_CONVERSAO if FATOR_NEUTRO_CONVERSAO > 0 else 1.0
-    fator_conversao_relativo_fora = eficacia_conversao_fora / FATOR_NEUTRO_CONVERSAO if FATOR_NEUTRO_CONVERSAO > 0 else 1.0
-
-    # Aplicação do Fator Base
+    # 1.1. Fatores Estatísticos (BASELINE - Padrão)
     fator_ofensivo_casa_base = gols_marcados_casa / liga_baseline
-    fator_defensivo_fora_base = liga_baseline / gols_sofridos_fora if gols_sofridos_fora > 0 else 2.0
+    fator_defensivo_fora_base = liga_baseline / max(gols_sofridos_fora, EPSILON) # Proteção
     fator_baseline_casa = fator_ofensivo_casa_base * fator_defensivo_fora_base * fator_conversao_relativo_casa
     
     fator_ofensivo_fora_base = gols_marcados_fora / liga_baseline
-    fator_defensivo_casa_base = liga_baseline / gols_sofridos_casa if gols_sofridos_casa > 0 else 2.0
+    fator_defensivo_casa_base = liga_baseline / max(gols_sofridos_casa, EPSILON) # Proteção
     fator_baseline_fora = fator_ofensivo_fora_base * fator_defensivo_casa_base * fator_conversao_relativo_fora
 
 
     # 1.2. Fatores Estatísticos (COMPARAÇÃO DIRETA - Sem Baseline)
     
-    fator_direto_casa = (gols_marcados_casa / gols_sofridos_fora) * fator_conversao_relativo_casa if gols_sofridos_fora > 0 else 2.0
-    fator_direto_fora = (gols_marcados_fora / gols_sofridos_casa) * fator_conversao_relativo_fora if gols_sofridos_casa > 0 else 2.0
+    fator_direto_casa = (gols_marcados_casa / max(gols_sofridos_fora, EPSILON)) * fator_conversao_relativo_casa
+    fator_direto_fora = (gols_marcados_fora / max(gols_sofridos_casa, EPSILON)) * fator_conversao_relativo_fora
 
 
     # 1.3. Fatores do Mercado (Market-Driven)
     
-    # Cálculo do Lambda (Market-Driven) usando o O/U 2.5 (Padrão)
     p_over_pre = calcular_prob_implicita(odds_over_pre)
     p_under_pre = calcular_prob_implicita(odds_under_pre)
     
-    # Cálculo da probabilidade normalizada (removendo a margem da casa de apostas)
     margem = (p_over_pre + p_under_pre) - 1
-    p_over_pre_normalizado = p_over_pre / (1 + margem) if (1 + margem) > 0 else 0
+    p_over_pre_normalizado = p_over_pre / max(1 + margem, EPSILON) 
 
     lambda_total_pre = calcular_lambda_total_from_odds(p_over_pre_normalizado)
     
-    # Fator Total do Mercado / Média da Liga 
     fator_mercado_total = lambda_total_pre / liga_baseline
     fator_mercado_casa = math.sqrt(fator_mercado_total)
     fator_mercado_fora = math.sqrt(fator_mercado_total)
@@ -95,28 +91,27 @@ def modelo_xg_dinamico_avancado(
     
     # --- 2. CÁLCULO MOMENTUM E AJUSTE DE PLACAR ---
     
-    # Ritmo Médio (xG/min) e Momentum (Lógica inalterada)
+    # Ritmo Médio (xG/min)
     ritmo_home_medio = xg_home / minutos_jogados
     ritmo_away_medio = xg_away / minutos_jogados
     
     periodo_momentum = 10
     periodo_analise = min(minutos_jogados, periodo_momentum)
         
-    ritmo_home_recente = xg_home / periodo_analise if periodo_analise > 0 else 0
-    ritmo_away_recente = xg_away / periodo_analise if periodo_analise > 0 else 0
+    ritmo_home_recente = xg_home / max(periodo_analise, EPSILON)
+    ritmo_away_recente = xg_away / max(periodo_analise, EPSILON)
 
-    momentum_home = (ritmo_home_recente / ritmo_home_medio) if ritmo_home_medio > 0 else 1.0
-    momentum_away = (ritmo_away_recente / ritmo_away_medio) if ritmo_away_medio > 0 else 1.0
-    
+    # Momentum: USANDO EPSILON NO DENOMINADOR DO RITMO MÉDIO
+    momentum_home = ritmo_home_recente / max(ritmo_home_medio, EPSILON)
+    momentum_away = ritmo_away_recente / max(ritmo_away_medio, EPSILON)
+
     # Ajuste por Placar
-    ajuste_home = 1.0
-    ajuste_away = 1.0
+    ajuste_home = 1.0; ajuste_away = 1.0
     if placar_home > placar_away:
         ajuste_home = 0.7; ajuste_away = 1.4
     elif placar_home < placar_away:
         ajuste_home = 1.4; ajuste_away = 0.7
 
-    # Fator Mando de Campo
     fator_mando = 1.1 
     minutos_restantes = duracao - minutos_jogados
     
@@ -137,8 +132,8 @@ def modelo_xg_dinamico_avancado(
         pover = 1 - p0
         
         # Odds e EV
-        odds_justa_over = 1 / pover
-        odds_justa_under = 1 / p0
+        odds_justa_over = 1 / pover if pover > 0 else float('inf')
+        odds_justa_under = 1 / p0 if p0 > 0 else float('inf')
         ev_over = (pover * odds_over_mkt) - 1
         ev_under = (p0 * odds_under_mkt) - 1
         
@@ -243,7 +238,7 @@ with col3:
     
     st.subheader("Odds Pré-Jogo (Força do Mercado)")
     
-    # NOVOS INPUTS 1X2
+    # INPUTS 1X2
     st.markdown("Odds 1X2")
     col3_1, col3_2, col3_3 = st.columns(3)
     with col3_1:
@@ -253,7 +248,7 @@ with col3:
     with col3_3:
         odds_2 = st.number_input("Odds 2 (Fora)", min_value=1.01, value=3.20, step=0.01, format="%.2f")
     
-    # NOVOS INPUTS O/U 1.5
+    # INPUTS O/U 1.5
     st.markdown("Odds Over/Under 1.5")
     odds_over_1_5_pre = st.number_input("Odds Over 1.5 (Pré-Jogo)", min_value=1.01, value=1.30, step=0.01, format="%.2f")
     odds_under_1_5_pre = st.number_input("Odds Under 1.5 (Pré-Jogo)", min_value=1.01, value=3.40, step=0.01, format="%.2f")
@@ -282,7 +277,7 @@ if st.button("Calcular Projeção e EV (3 Cenários)", type="primary"):
         gols_marcados_casa=gols_marcados_casa, gols_sofridos_fora=gols_sofridos_fora, eficacia_conversao_casa=eficacia_conversao_casa,
         gols_marcados_fora=gols_marcados_fora, gols_sofridos_casa=gols_sofridos_casa, eficacia_conversao_fora=eficacia_conversao_fora,
         media_liga_gols_por_jogo=media_liga_gols_por_jogo,
-        # NOVOS INPUTS PASSADOS
+        # INPUTS PASSADOS
         odds_over_pre=odds_over_pre, odds_under_pre=odds_under_pre,
         odds_1=odds_1, odds_x=odds_x, odds_2=odds_2,
         odds_over_1_5_pre=odds_over_1_5_pre, odds_under_1_5_pre=odds_under_1_5_pre
@@ -335,5 +330,5 @@ if st.button("Calcular Projeção e EV (3 Cenários)", type="primary"):
         
         st.divider()
         st.markdown(
-            "***Observação:*** O cálculo do **Lambda Total Pré-Jogo** para o **Modelo Mercado** continua utilizando a probabilidade implícita do **Over/Under 2.5**, conforme a função `calcular_lambda_total_from_odds`. Os inputs de 1X2 e O/U 1.5 estão disponíveis para futuras calibrações de *spread* de gols."
+            "***Observação:*** O modelo agora é muito mais estável, graças às proteções contra divisão por zero."
         )
