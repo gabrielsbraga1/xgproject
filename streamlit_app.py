@@ -5,22 +5,18 @@ import math
 # ⚽ CONSTANTES E FUNÇÕES AUXILIARES
 # ==============================================================================
 
-# Média de Gols da Liga (baseline para calcular fatores de força)
-MEDIA_LIGA_GOLS_POR_JOGO = 2.5 
-
 def calcular_lambda_total_from_odds(p_over):
     """
     Estima o Lambda (Expected Total Goals) a partir da probabilidade P(Over 2.5 Gols),
-    usando um método de aproximação (Iteração).
+    usando um método de aproximação.
     """
-    # Aproximação de Lambda baseada em P(Over 2.5) assumindo Poisson simples.
-    # Esta é uma função não linear complexa de inverter, usamos um valor aproximado.
+    # A curva de probabilidade vs Lambda não é linear. Estes são pontos de referência.
     if p_over >= 0.7: return 3.2 
     if p_over >= 0.6: return 2.8
     if p_over >= 0.5: return 2.4
     if p_over >= 0.4: return 2.0
     if p_over >= 0.3: return 1.6
-    return 1.2 # Default para over baixo
+    return 1.2
 
 def calcular_prob_implicita(odds):
     """Calcula a probabilidade implícita (sem margem) de uma odd."""
@@ -36,10 +32,11 @@ def modelo_xg_dinamico_avancado(
     minutos_jogados,
     placar_home, placar_away,
     odds_over_mkt, odds_under_mkt,
-    # Métricas para Força Estatística
+    # Métricas Estatísticas
     gols_marcados_casa, gols_sofridos_fora, conversao_casa,
     gols_marcados_fora, gols_sofridos_casa, conversao_fora,
-    # Odds Pré-Jogo (para Força do Mercado)
+    media_liga_gols_por_jogo, # NOVO INPUT
+    # Odds Pré-Jogo
     odds_over_pre, odds_under_pre,
     duracao=90
 ):
@@ -47,145 +44,111 @@ def modelo_xg_dinamico_avancado(
     if minutos_jogados == 0:
         return None, "Erro: Minutos jogados não podem ser zero."
 
-    # --- 1. CÁLCULO DOS FATORES DE FORÇA PRÉ-JOGO ---
+    # --- 1. CÁLCULO DOS FATORES DE FORÇA PRÉ-JOGO (3 TIPOS) ---
+    
+    # 1.1. Fatores Estatísticos (BASELINE - Padrão)
+    
+    # Prevenção de divisão por zero (evitar Média Liga = 0)
+    liga_baseline = media_liga_gols_por_jogo if media_liga_gols_por_jogo > 0 else 2.5
 
-    # Cenário 1: Força Estatística (Model-Driven)
-    # Fator é a média geométrica dos ritmos relativos, ajustado pela eficácia.
-    fator_ofensivo_casa = gols_marcados_casa / MEDIA_LIGA_GOLS_POR_JOGO
-    fator_defensivo_fora = MEDIA_LIGA_GOLS_POR_JOGO / gols_sofridos_fora
+    fator_ofensivo_casa_base = gols_marcados_casa / liga_baseline
+    fator_defensivo_fora_base = liga_baseline / gols_sofridos_fora if gols_sofridos_fora > 0 else 2.0
     
-    fator_estatistico_casa = fator_ofensivo_casa * fator_defensivo_fora * conversao_casa
+    fator_baseline_casa = fator_ofensivo_casa_base * fator_defensivo_fora_base * conversao_casa
     
-    fator_ofensivo_fora = gols_marcados_fora / MEDIA_LIGA_GOLS_POR_JOGO
-    fator_defensivo_casa = MEDIA_LIGA_GOLS_POR_JOGO / gols_sofridos_casa
+    fator_ofensivo_fora_base = gols_marcados_fora / liga_baseline
+    fator_defensivo_casa_base = liga_baseline / gols_sofridos_casa if gols_sofridos_casa > 0 else 2.0
     
-    fator_estatistico_fora = fator_ofensivo_fora * fator_defensivo_casa * conversao_fora
-    
-    # Mando de Campo: Usamos uma média fixa de 10% de boost no ritmo total do mandante.
-    fator_mando = 1.1 
+    fator_baseline_fora = fator_ofensivo_fora_base * fator_defensivo_casa_base * conversao_fora
 
-    # Cenário 2: Força do Mercado (Market-Driven)
+
+    # 1.2. Fatores Estatísticos (COMPARAÇÃO DIRETA - Sem Baseline)
     
-    # Calcula a probabilidade implícita do mercado Over/Under 2.5 Pré-Jogo
+    fator_direto_casa = (gols_marcados_casa / gols_sofridos_fora) * conversao_casa if gols_sofridos_fora > 0 else 2.0
+    fator_direto_fora = (gols_marcados_fora / gols_sofridos_casa) * conversao_fora if gols_sofridos_casa > 0 else 2.0
+
+
+    # 1.3. Fatores do Mercado (Market-Driven)
+    
     p_over_pre = calcular_prob_implicita(odds_over_pre)
     p_under_pre = calcular_prob_implicita(odds_under_pre)
-    
-    # Normaliza a probabilidade para Over (removendo margem)
     p_over_pre_normalizado = p_over_pre / (p_over_pre + p_under_pre)
     
-    # Inferir o Lambda Total (xG esperado total) a partir do P(Over 2.5) normalizado
     lambda_total_pre = calcular_lambda_total_from_odds(p_over_pre_normalizado)
     
-    # Assumimos que a divisão do Lambda (xG) entre casa/fora segue a proporção do xG/gols histórico
-    # Para simplificar, usaremos o fator de mercado como o Lambda Total / MEDIA_LIGA_GOLS_POR_JOGO
-    # O modelo do mercado é usado para criar um FATOR TOTAL.
-    fator_mercado_total = lambda_total_pre / MEDIA_LIGA_GOLS_POR_JOGO
-
-    # Aplicamos este fator de forma simétrica a Casa e Fora para simplificar a integração
-    fator_mercado_casa = math.sqrt(fator_mercado_total) # Raiz quadrada para distribuir o fator
+    # Fator Total do Mercado / Média da Liga (para ter um multiplicador relativo)
+    fator_mercado_total = lambda_total_pre / liga_baseline
+    fator_mercado_casa = math.sqrt(fator_mercado_total)
     fator_mercado_fora = math.sqrt(fator_mercado_total)
 
-    # --- 2. CÁLCULO MOMENTUM (REUTILIZADO) ---
     
-    # (Lógica do Momentum, Placar, e Ritmo Médio permanecem a mesma)
+    # --- 2. CÁLCULO MOMENTUM E AJUSTE DE PLACAR ---
     
-    # Ritmo Médio (xG/min) do time na partida:
+    # Ritmo Médio (xG/min) e Momentum
     ritmo_home_medio = xg_home / minutos_jogados
     ritmo_away_medio = xg_away / minutos_jogados
     
-    # Ritmo recente (considera o período de 10 min, mantendo a variável de input para facilitar)
-    periodo_momentum = 10 # Fixo, mas poderia ser um input
-    
-    if minutos_jogados < periodo_momentum:
-        periodo_analise = minutos_jogados
-    else:
-        periodo_analise = periodo_momentum
+    periodo_momentum = 10
+    periodo_analise = min(minutos_jogados, periodo_momentum)
         
-    if periodo_analise > 0:
-        ritmo_home_recente = xg_home / periodo_analise # Usando xG total se for o único disponível
-        ritmo_away_recente = xg_away / periodo_analise
-    else:
-        ritmo_home_recente = 0
-        ritmo_away_recente = 0
+    # No caso de xG Recente não ser inserido, o ritmo recente é o ritmo médio
+    ritmo_home_recente = xg_home / periodo_analise if periodo_analise > 0 else 0
+    ritmo_away_recente = xg_away / periodo_analise if periodo_analise > 0 else 0
 
-    # Fatores Momentum (Momentum Home/Away, 1.0 se ritmos forem zero)
     momentum_home = (ritmo_home_recente / ritmo_home_medio) if ritmo_home_medio > 0 else 1.0
     momentum_away = (ritmo_away_recente / ritmo_away_medio) if ritmo_away_medio > 0 else 1.0
     
     # Ajuste por Placar
     ajuste_home = 1.0
     ajuste_away = 1.0
-
     if placar_home > placar_away:
-        ajuste_home = 0.7
-        ajuste_away = 1.4
+        ajuste_home = 0.7; ajuste_away = 1.4
     elif placar_home < placar_away:
-        ajuste_home = 1.4
-        ajuste_away = 0.7
+        ajuste_home = 1.4; ajuste_away = 0.7
 
-    # --- 3. EXECUÇÃO DA PROJEÇÃO (DUAS VEZES) ---
-    
-    resultados = {}
-
-    # Cenário 1: PROJEÇÃO BASEADA NA FORÇA ESTATÍSTICA
-    
-    ritmo_proj_home_est = ritmo_home_medio * fator_estatistico_casa * fator_mando * ajuste_home * momentum_home
-    ritmo_proj_away_est = ritmo_away_medio * fator_estatistico_fora * ajuste_away * momentum_away
-    
+    # Fator Mando de Campo
+    fator_mando = 1.1 
     minutos_restantes = duracao - minutos_jogados
-    lambda_est = (ritmo_proj_home_est + ritmo_proj_away_est) * minutos_restantes
-
+    
     if minutos_restantes <= 0:
         return None, "Erro: O jogo já acabou."
         
-    # Cálculo Poisson
-    p0_est = math.exp(-lambda_est)
-    pover_est = 1 - p0_est
-    odds_justa_over_est = 1 / pover_est
-    odds_justa_under_est = 1 / p0_est
-    ev_over_est = (pover_est * odds_over_mkt) - 1
-    ev_under_est = (p0_est * odds_under_mkt) - 1
+    # --- 3. EXECUÇÃO DAS PROJEÇÕES (3 Cenários) ---
     
-    resultados["Modelo Estatístico"] = {
-        "lambda": round(lambda_est, 3),
-        "P(0 gols)": round(p0_est, 3),
-        "P(>=1 gol)": round(pover_est, 3),
-        "Odd Justa Over": round(odds_justa_over_est, 2),
-        "Odd Justa Under": round(odds_justa_under_est, 2),
-        "EV Over (%)": round(ev_over_est * 100, 1),
-        "EV Under (%)": round(ev_under_est * 100, 1),
-        "Fator Casa Usado": round(fator_estatistico_casa, 2),
-        "Fator Fora Usado": round(fator_estatistico_fora, 2),
-    }
+    def run_projection(fator_casa, fator_fora, nome_modelo):
+        
+        # Ritmo Projetado
+        ritmo_proj_home = ritmo_home_medio * fator_casa * fator_mando * ajuste_home * momentum_home
+        ritmo_proj_away = ritmo_away_medio * fator_fora * ajuste_away * momentum_away
+        
+        # Lambda e Poisson
+        lambda_xg = (ritmo_proj_home + ritmo_proj_away) * minutos_restantes
+        p0 = math.exp(-lambda_xg)
+        pover = 1 - p0
+        
+        # Odds e EV
+        odds_justa_over = 1 / pover
+        odds_justa_under = 1 / p0
+        ev_over = (pover * odds_over_mkt) - 1
+        ev_under = (p0 * odds_under_mkt) - 1
+        
+        return {
+            "lambda": round(lambda_xg, 3),
+            "P(0 gols)": round(p0, 3),
+            "P(>=1 gol)": round(pover, 3),
+            "Odd Justa Under": round(odds_justa_under, 2),
+            "EV Under (%)": round(ev_under * 100, 1),
+            "Fator Casa Usado": round(fator_casa, 2),
+            "Fator Fora Usado": round(fator_fora, 2),
+            "Nome": nome_modelo
+        }
 
-    # Cenário 2: PROJEÇÃO BASEADA NA EXPECTATIVA DO MERCADO
-
-    ritmo_proj_home_mkt = ritmo_home_medio * fator_mercado_casa * fator_mando * ajuste_home * momentum_home
-    ritmo_proj_away_mkt = ritmo_away_medio * fator_mercado_fora * ajuste_away * momentum_away
-
-    lambda_mkt = (ritmo_proj_home_mkt + ritmo_proj_away_mkt) * minutos_restantes
-
-    # Cálculo Poisson
-    p0_mkt = math.exp(-lambda_mkt)
-    pover_mkt = 1 - p0_mkt
-    odds_justa_over_mkt = 1 / pover_mkt
-    odds_justa_under_mkt = 1 / p0_mkt
-    ev_over_mkt = (pover_mkt * odds_over_mkt) - 1
-    ev_under_mkt = (p0_mkt * odds_under_mkt) - 1
+    resultados = {}
+    resultados["Modelo Base (Baseline)"] = run_projection(fator_baseline_casa, fator_baseline_fora, "Estatístico (Baseline)")
+    resultados["Modelo Direto (Comparação)"] = run_projection(fator_direto_casa, fator_direto_fora, "Estatístico (Direto)")
+    resultados["Modelo Mercado"] = run_projection(fator_mercado_casa, fator_mercado_fora, "Expectativa Mercado")
     
-    resultados["Expectativa do Mercado"] = {
-        "lambda": round(lambda_mkt, 3),
-        "P(0 gols)": round(p0_mkt, 3),
-        "P(>=1 gol)": round(pover_mkt, 3),
-        "Odd Justa Over": round(odds_justa_over_mkt, 2),
-        "Odd Justa Under": round(odds_justa_under_mkt, 2),
-        "EV Over (%)": round(ev_over_mkt * 100, 1),
-        "EV Under (%)": round(ev_under_mkt * 100, 1),
-        "Fator Casa Usado": round(fator_mercado_casa, 2),
-        "Fator Fora Usado": round(fator_mercado_fora, 2),
-    }
-
-    # Resultados dinâmicos (momentum)
+    # Fatores Dinâmicos
     resultados["Fatores Dinâmicos"] = {
         "Momentum Home": round(momentum_home, 2), 
         "Momentum Away": round(momentum_away, 2),
@@ -203,8 +166,8 @@ st.set_page_config(
     layout="wide"
 )
 
-st.title("⚽ Modelo Dinâmico xG Avançado")
-st.markdown("Analisa a projeção de gols restantes usando *momentum* e duas fontes de força pré-jogo: **Estatística** e **Mercado**.")
+st.title("⚽ Modelo Dinâmico xG Avançado (3 Cenários)")
+st.markdown("Analisa a projeção de gols restantes usando *momentum* e três fontes de força pré-jogo: **Estatística (Baseline)**, **Estatística (Direta)** e **Mercado**.")
 
 st.divider()
 
@@ -212,51 +175,59 @@ st.divider()
 col1, col2, col3 = st.columns(3)
 
 with col1:
-    st.header("⏱️ Contexto da Partida")
-    # Alterado para number_input
+    st.header("⏱️ Contexto & xG")
     minutos_jogados = st.number_input("Minutos Jogados", min_value=1, max_value=90, value=70, step=1)
     placar_home = st.number_input("Placar Time da Casa", min_value=0, value=1, step=1)
     placar_away = st.number_input("Placar Time Visitante", min_value=0, value=0, step=1)
     duracao = st.number_input("Duração Total do Jogo (min)", min_value=60, max_value=120, value=90, step=5)
     
-    st.header("📊 xG Acumulado")
+    st.markdown("---")
     xg_home = st.number_input("xG Time da Casa (Total)", min_value=0.0, value=1.31, step=0.01, format="%.2f")
     xg_away = st.number_input("xG Time Visitante (Total)", min_value=0.0, value=0.57, step=0.01, format="%.2f")
 
 
 with col2:
     st.header("⭐ Força Estatística (Pré-Jogo)")
-    st.markdown(f"*(Baseline da Liga assumida: {MEDIA_LIGA_GOLS_POR_JOGO} Gols)*")
+    
+    # NOVO: Input da Média da Liga
+    media_liga_gols_por_jogo = st.number_input(
+        "Média de Gols/Jogo da Liga (Baseline)", 
+        min_value=0.1, 
+        value=2.5, 
+        step=0.05, 
+        format="%.2f",
+        help="A média de gols por jogo na liga. Essencial para o cálculo do Modelo Baseline."
+    )
     
     # Time da Casa
     with st.expander("Time da Casa"):
-        gols_marcados_casa = st.number_input("Gols Marcados/Jogo (Casa)", min_value=0.5, value=1.7, step=0.01, format="%.2f", help="Média histórica de gols marcados pelo time da casa.")
-        gols_sofridos_casa = st.number_input("Gols Sofridos/Jogo (Casa)", min_value=0.5, value=1.2, step=0.01, format="%.2f", help="Média histórica de gols sofridos pelo time da casa.")
-        conversao_casa = st.number_input("Eficácia de Conversão (Fator)", min_value=0.5, max_value=2.0, value=1.05, step=0.01, format="%.2f", help="Ajuste fino na força: 1.05 = 5% acima da média.")
+        gols_marcados_casa = st.number_input("Gols Marcados/Jogo (Casa)", min_value=0.5, value=1.7, step=0.01, format="%.2f")
+        gols_sofridos_casa = st.number_input("Gols Sofridos/Jogo (Casa)", min_value=0.5, value=1.2, step=0.01, format="%.2f")
+        conversao_casa = st.number_input("Eficácia de Conversão (Fator Casa)", min_value=0.5, max_value=2.0, value=1.05, step=0.01, format="%.2f")
 
     # Time Visitante
     with st.expander("Time Visitante"):
-        gols_marcados_fora = st.number_input("Gols Marcados/Jogo (Fora)", min_value=0.5, value=1.1, step=0.01, format="%.2f", help="Média histórica de gols marcados pelo time visitante.")
-        gols_sofridos_fora = st.number_input("Gols Sofridos/Jogo (Fora)", min_value=0.5, value=1.5, step=0.01, format="%.2f", help="Média histórica de gols sofridos pelo time visitante.")
-        conversao_fora = st.number_input("Eficácia de Conversão (Fator)", min_value=0.5, max_value=2.0, value=0.95, step=0.01, format="%.2f", help="Ajuste fino na força: 0.95 = 5% abaixo da média.")
+        gols_marcados_fora = st.number_input("Gols Marcados/Jogo (Fora)", min_value=0.5, value=1.1, step=0.01, format="%.2f")
+        gols_sofridos_fora = st.number_input("Gols Sofridos/Jogo (Fora)", min_value=0.5, value=1.5, step=0.01, format="%.2f")
+        conversao_fora = st.number_input("Eficácia de Conversão (Fator Fora)", min_value=0.5, max_value=2.0, value=0.95, step=0.01, format="%.2f")
 
 
 with col3:
     st.header("📈 Odds de Mercado")
     
-    st.subheader("Odds Pré-Jogo (Para Força do Mercado)")
-    st.markdown("Odds Over/Under 2.5 (Ex: 1.70 / 2.10)")
+    st.subheader("Odds Pré-Jogo (Força do Mercado)")
+    st.markdown("Odds Over/Under 2.5 (Para inferir a expectativa do Mercado)")
     odds_over_pre = st.number_input("Odds Over 2.5 (Pré-Jogo)", min_value=1.01, value=1.90, step=0.01, format="%.2f")
     odds_under_pre = st.number_input("Odds Under 2.5 (Pré-Jogo)", min_value=1.01, value=1.90, step=0.01, format="%.2f")
 
-    st.subheader("Odds In-Play (Para Cálculo do EV)")
-    st.markdown("Odds Over/Under 0.5 Gols Restantes")
+    st.subheader("Odds In-Play (Para EV)")
+    st.markdown("Odds Over/Under 0.5 Gols Restantes (Odds atuais)")
     odds_over_mkt = st.number_input("Odds Over 0.5 (In-Play)", min_value=1.01, value=1.60, step=0.01, format="%.2f")
     odds_under_mkt = st.number_input("Odds Under 0.5 (In-Play)", min_value=1.01, value=2.20, step=0.01, format="%.2f")
 
 
 # --- BOTÃO E EXECUÇÃO ---
-if st.button("Calcular Projeção e EV (2 Cenários)", type="primary"):
+if st.button("Calcular Projeção e EV (3 Cenários)", type="primary"):
     
     # Executa o modelo
     resultados, erro = modelo_xg_dinamico_avancado(
@@ -266,8 +237,8 @@ if st.button("Calcular Projeção e EV (2 Cenários)", type="primary"):
         odds_over_mkt=odds_over_mkt, odds_under_mkt=odds_under_mkt,
         gols_marcados_casa=gols_marcados_casa, gols_sofridos_fora=gols_sofridos_fora, conversao_casa=conversao_casa,
         gols_marcados_fora=gols_marcados_fora, gols_sofridos_casa=gols_sofridos_casa, conversao_fora=conversao_fora,
-        odds_over_pre=odds_over_pre, odds_under_pre=odds_under_pre,
-        duracao=duracao
+        media_liga_gols_por_jogo=media_liga_gols_por_jogo, # Passando o novo input
+        odds_over_pre=odds_over_pre, odds_under_pre=odds_under_pre
     )
 
     if erro:
@@ -276,78 +247,68 @@ if st.button("Calcular Projeção e EV (2 Cenários)", type="primary"):
         st.divider()
         st.header("💡 Resultados da Projeção e Valor Esperado (EV)")
         
-        col_fat, col_est, col_mkt = st.columns(3)
+        # Colunas de Resultados
+        col_fat, col_base, col_dir, col_mkt = st.columns(4)
         fatores = resultados["Fatores Dinâmicos"]
 
+        # 1. Fatores Dinâmicos
         with col_fat:
-            st.subheader("Fatores Dinâmicos Aplicados")
-            st.metric(
-                label="Fator Momentum Casa", 
-                value=f"{fatores['Momentum Home']:.2f}", 
-                help="Ritmo Recente / Ritmo Médio (aplicado a ambos cenários)."
-            )
-            st.metric(
-                label="Fator Momentum Visitante", 
-                value=f"{fatores['Momentum Away']:.2f}",
-                help="Ritmo Recente / Ritmo Médio (aplicado a ambos cenários)."
-            )
-            st.metric(
-                label="Fator Mando de Campo", 
-                value=f"{fatores['Fator Mando Fixo']:.2f}",
-                help="Fator fixo aplicado ao ritmo do mandante."
-            )
+            st.subheader("Fatores de Ajuste")
+            st.metric(label="Fator Momentum Casa", value=f"{fatores['Momentum Home']:.2f}")
+            st.metric(label="Fator Momentum Visitante", value=f"{fatores['Momentum Away']:.2f}")
+            st.metric(label="Fator Mando de Campo", value=f"{fatores['Fator Mando Fixo']:.2f}")
 
-        # --- Cenário 1: Modelo Estatístico ---
-        est = resultados["Modelo Estatístico"]
-        with col_est:
-            st.subheader("1. Projeção: Modelo Estatístico (Off/Def)")
-            st.caption(f"Fator Casa: **{est['Fator Casa Usado']:.2f}** | Fator Fora: **{est['Fator Fora Usado']:.2f}**")
-            
-            st.metric(
-                label="xG Esperado (λ)", 
-                value=f"{est['lambda']:.3f}"
-            )
-            st.metric(
-                label="P(0 Gols)", 
-                value=f"{est['P(0 gols)']:.1%}"
-            )
-            st.metric(
-                label="Odds Justa Under", 
-                value=f"{est['Odd Justa Under']:.2f}"
-            )
-            st.metric(
-                label="EV Under (%)", 
-                value=f"{est['EV Under (%)']:.1f}%", 
-                delta_color="normal" if est['EV Under (%)'] > 0 else "inverse", 
-                delta="Vantagem" if est['EV Under (%)'] > 0 else "Desvantagem"
-            )
+        # Função auxiliar para exibir o EV
+        def display_ev_column(col, result_key, title):
+            res = resultados[result_key]
+            with col:
+                st.subheader(title)
+                st.caption(f"Fator Casa: **{res['Fator Casa Usado']:.2f}** | Fator Fora: **{res['Fator Fora Usado']:.2f}**")
+                
+                st.metric(label="xG Esperado (λ)", value=f"{res['lambda']:.3f}")
+                st.metric(label="P(0 Gols)", value=f"{res['P(0 gols)']:.1%}")
+                st.metric(label="Odds Justa Under", value=f"{res['Odd Justa Under']:.2f}")
+                
+                ev_under_valor = res['EV Under (%)']
+                st.metric(
+                    label=f"💰 EV Under ({odds_under_mkt:.2f})", 
+                    value=f"{ev_under_valor:.1f}%", 
+                    delta_color="normal" if ev_under_valor > 0 else "inverse", 
+                    delta="Vantagem" if ev_under_valor > 0 else "Desvantagem"
+                )
 
-        # --- Cenário 2: Expectativa do Mercado ---
-        mkt = resultados["Expectativa do Mercado"]
-        with col_mkt:
-            st.subheader("2. Projeção: Expectativa do Mercado (Odds Pré-Jogo)")
-            st.caption(f"Fator Casa: **{mkt['Fator Casa Usado']:.2f}** | Fator Fora: **{mkt['Fator Fora Usado']:.2f}**")
-
-            st.metric(
-                label="xG Esperado (λ)", 
-                value=f"{mkt['lambda']:.3f}"
-            )
-            st.metric(
-                label="P(0 Gols)", 
-                value=f"{mkt['P(0 gols)']:.1%}"
-            )
-            st.metric(
-                label="Odds Justa Under", 
-                value=f"{mkt['Odd Justa Under']:.2f}"
-            )
-            st.metric(
-                label="EV Under (%)", 
-                value=f"{mkt['EV Under (%)']:.1f}%", 
-                delta_color="normal" if mkt['EV Under (%)'] > 0 else "inverse", 
-                delta="Vantagem" if mkt['EV Under (%)'] > 0 else "Desvantagem"
-            )
-            
+        # 2. Modelo Estatístico (Baseline)
+        display_ev_column(col_base, "Modelo Base (Baseline)", "1. Estatístico (Baseline)")
+        
+        # 3. Modelo Estatístico (Direto)
+        display_ev_column(col_dir, "Modelo Direto (Comparação)", "2. Estatístico (Direto)")
+        
+        # 4. Modelo Mercado
+        display_ev_column(col_mkt, "Modelo Mercado", "3. Expectativa Mercado")
+        
         st.divider()
         st.markdown(
-            "***Diferença de Valor:*** Compare o **EV (%)** dos dois cenários. Se o EV for positivo em um modelo e negativo no outro, isso aponta para uma divergência clara entre a sua análise estatística e o preço do mercado."
+            "***Análise dos Fatores:*** A comparação entre os modelos **Estatístico (Baseline)** e **Estatístico (Direto)** mostra o impacto da **Média da Liga** na avaliação de força. Um time que é forte para sua liga (Baseline alto) pode não ser forte o suficiente se a defesa do adversário for excepcionalmente fraca (Direto alto)."
         )
+
+---
+
+## 🔑 O que Acontece no Novo Código
+
+O seu aplicativo agora gerencia a força estatística em **dois caminhos paralelos** para a projeção:
+
+### 1. Modelo Estatístico (Baseline)
+
+* **Fórmula:** Utiliza o valor que você insere em "**Média de Gols/Jogo da Liga**" (Baseline).
+* **Finalidade:** É o método mais padrão. Ele mede o quão bom um time é em **termos absolutos** (comparado à liga).
+* **Cálculo (Exemplo $Fator_{Casa}$):**
+    $$Fator_{Casa} = \left(\frac{Gols Marcados_{Casa}}{Média_{Liga}}\right) \times \left(\frac{Média_{Liga}}{Gols Sofridos_{Fora}}\right) \times Conversão_{Casa}$$
+
+### 2. Modelo Estatístico (Direto)
+
+* **Fórmula:** **Ignora** a Média da Liga. Compara diretamente a capacidade ofensiva do ataque de um time contra a fragilidade defensiva do outro.
+* **Finalidade:** Útil quando a Média da Liga não é conhecida ou para simular um cenário onde o confronto direto é a única métrica relevante.
+* **Cálculo (Exemplo $Fator_{Casa}$):**
+    $$Fator_{Casa} = \left(\frac{Gols Marcados_{Casa}}{Gols Sofridos_{Fora}}\right) \times Conversão_{Casa}$$
+
+Ambos os fatores, juntamente com o fator inferido pelas Odds Pré-Jogo, são usados para gerar resultados separados, permitindo que você compare qual visão (absoluta, relativa ou mercado) gera um **Valor Esperado (EV)** mais alto.
